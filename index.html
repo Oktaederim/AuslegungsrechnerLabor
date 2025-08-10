@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Laserlabor – Auslegungsrechner (T/Feuchte)</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Laserlabor – Auslegungsrechner</h1>
+    <div class="row">
+      <button id="btnReset" title="Eingaben zurücksetzen">Zurücksetzen</button>
+      <button id="btnSave" title="Aktuelle Eingaben als Szenario speichern">Szenario speichern</button>
+      <select id="scenarioSelect" title="Gespeicherte Szenarien laden">
+        <option value="">Szenario laden …</option>
+      </select>
+      <button id="btnDelete" title="Ausgewähltes Szenario löschen">Löschen</button>
+      <span class="muted" id="status"></span>
+    </div>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>Eingaben</h2>
+      <div class="grid">
+        <div class="field-group">
+          <h3>Raum</h3>
+          <label>Länge [m] <input type="number" id="L" step="0.1" value="5"></label>
+          <label>Breite [m] <input type="number" id="B" step="0.1" value="5"></label>
+          <label>Höhe [m] <input type="number" id="H" step="0.1" value="3"></label>
+          <div class="hint">Volumen: <span id="Vroom">–</span> m³</div>
+
+          <label>Soll Raumtemperatur [°C] <input type="number" id="T_room" step="0.1" value="21"></label>
+
+          <div class="row">
+            <label><input type="radio" name="feuchteMode" value="abs" checked> Absolute Feuchte</label>
+            <label><input type="radio" name="feuchteMode" value="rel"> Relative Feuchte</label>
+          </div>
+          <label id="labelAbs">Soll absolute Feuchte [g/kg] <input type="number" id="x_room_gpkg" step="0.1" value="5.4"></label>
+          <label id="labelRel" class="hidden">Soll relative Feuchte [%] <input type="number" id="RH_room_pct" step="1" value="35"></label>
+          <div class="hint">Berechnete r.F.: <span id="RH_room_calc">–</span> %</div>
+
+          <label>Zulufttemperatur (nach Nacherwärmung) [°C] <input type="number" id="T_supply" step="0.1" value="16"></label>
+        </div>
+
+        <div class="field-group">
+          <h3>Außenluft & Umluft</h3>
+          <label>Außenlufttemperatur [°C] <input type="number" id="T_OA" step="0.1" value="30"></label>
+          <label>Außenluft r.F. [%] <input type="number" id="RH_OA_pct" step="1" value="50"></label>
+          <label>Außenluftanteil [%] <input type="number" id="OA_frac_pct" step="1" value="15" min="0" max="100"></label>
+          <div class="hint">x<sub>OA</sub>: <span id="x_oa_label">–</span> g/kg</div>
+
+          <div class="row">
+            <label><input type="radio" name="sizeMode" value="auto" checked> Zuluftmenge automatisch aus sensibler Bilanz</label>
+          </div>
+          <div class="row">
+            <label><input type="radio" name="sizeMode" value="fixed"> Zuluftmenge vorgeben</label>
+            <input type="number" id="Vdot_user" step="10" value="2600" disabled> <span>m³/h</span>
+          </div>
+
+          <label>Luftdichte [kg/m³] <input type="number" id="rho_air" step="0.01" value="1.2"></label>
+          <label>Luftdruck [hPa] <input type="number" id="p_bar_hPa" step="1" value="1013"></label>
+        </div>
+
+        <div class="field-group">
+          <h3>Interne Lasten</h3>
+          <label>Personenzahl <input type="number" id="n_persons" step="1" value="2"></label>
+          <div class="hint tiny">Richtwerte je Person: sensibel 70 W, latent 0,05 kg/h (anpassbar)</div>
+          <label>Person – sensible Leistung je Person [W] <input type="number" id="P_sens_pp_W" step="1" value="70"></label>
+          <label>Person – Feuchte je Person [kg/h] <input type="number" id="m_lat_pp_kgph" step="0.01" value="0.05"></label>
+
+          <label>Zusätzliche sensible Last gesamt [kW] <input type="number" id="Q_int_sens_kW" step="0.1" value="1.5"></label>
+          <label>Zusätzlicher Feuchteeintrag gesamt [kg/h] <input type="number" id="m_int_lat_kgph" step="0.1" value="0.5"></label>
+        </div>
+
+        <div class="field-group">
+          <h3>Nebenbedingungen</h3>
+          <label>Mindest-Luftwechsel (ACH) [1/h] <input type="number" id="ACH_min" step="0.1" value="6"></label>
+          <label>Min. Außenluft pro Person [m³/h·Pers] <input type="number" id="OA_per_person" step="1" value="20"></label>
+<label>Absolute Mindest-Außenluft [m³/h] <input type="number" id="OA_min_m3ph" step="1" value="100"></label>
+          <div class="hint tiny">Hinweis: Die automatische Auslegung nutzt den größten Wert aus (sensibler Bedarf, Mindest-ACH). Der benötigte Außenluftstrom ist max(Außenluftanteil·Zuluft, Personenbedarf).</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Ergebnisse</h2>
+      <div class="grid results">
+        <div class="box">
+          <h3>Luftmengen</h3>
+          <div>Trockenluftmassenstrom: <b id="m_dot">–</b> kg/s</div>
+          <div>Zuluftvolumenstrom: <b id="Vdot">–</b> m³/h</div>
+          <div>Außenluftvolumenstrom (effektiv): <b id="Vdot_OA">–</b> m³/h</div>
+          <div class="hint tiny">Governing: <span id="governing">–</span></div>
+        </div>
+
+        <div class="box">
+          <h3>Sensible / Latente Leistungen</h3>
+          <div>Sensible Kühlleistung gesamt: <b id="Q_sens">–</b> kW</div>
+          <div>…davon Außenluftanteil: <b id="Q_sens_OA">–</b> kW</div>
+          <div>…davon interne sensibel: <b id="Q_sens_int">–</b> kW</div>
+          <div>Latent – Außenluft: <b id="Q_lat_OA">–</b> kW</div>
+          <div>Latent – intern: <b id="Q_lat_int">–</b> kW</div>
+          <div>Latent gesamt: <b id="Q_lat">–</b> kW</div>
+        </div>
+
+        <div class="box">
+          <h3>Gesamt / Nacherwärmung</h3>
+          <div>Gesamte Kühlleistung: <b id="Q_total">–</b> kW</div>
+          <div>Erforderliche Zuluft-Feuchte x<sub>ZU</sub>: <b id="x_supply">–</b> g/kg</div>
+          <div>Minimaler Register-Taupunkt: <b id="Tdp_coil">–</b> °C</div>
+          <div>Nacherwärmung (Reheat): <b id="Q_reheat">–</b> kW</div>
+          <div>Kondensatstrom: <b id="m_cond">–</b> kg/h</div>
+          <hr>
+          <div><b>Befeuchtung (Winterannahme)</b></div>
+          <div>Erforderlicher Befeuchtungsstrom: <b id="m_hum">–</b> kg/h</div>
+          <div>Befeuchtungsleistung (≈latente): <b id="Q_hum">–</b> kW</div>
+        </div>
+
+        <div class="box">
+          <h3>Psychrometrie</h3>
+          <div>x<sub>Raum</sub>: <b id="x_room_label">–</b> g/kg</div>
+          <div>r.F. Raum: <b id="rh_room_label">–</b> %</div>
+          <div>Taupunkt Raum: <b id="tdp_room_label">–</b> °C</div>
+          <div>x<sub>OA</sub>: <b id="x_oa_label_2">–</b> g/kg</div>
+          <div>Taupunkt Außenluft: <b id="tdp_oa_label">–</b> °C</div>
+        </div>
+      </div>
+      <div id="warnings" class="warnings"></div>
+    </section>
+
+    <section class="card">
+      <h2>Begriffe (Kurz-Glossar)</h2>
+      <ul class="glossary">
+        <li><b>Außenluftanteil</b>: Anteil der Außenluft an der Zuluft [%].</li>
+        <li><b>Zulufttemperatur (nach Nacherwärmung)</b>: Temperatur der trockenen Zuluft, nachdem sie nach der Entfeuchtung wieder erwärmt wurde.</li>
+        <li><b>Nacherwärmung (Reheat)</b>: Heizleistung, die nötig ist, um sehr kalte/gesättigte Luft nach der Entfeuchtung auf die gewünschte Zulufttemperatur zu bringen.</li>
+        <li><b>Register-Taupunkt</b>: Temperatur am Austritt der Kühlspule, bei der die Luft gesättigt ist; bestimmt, wie trocken die Zuluft werden kann.</li>
+        <li><b>Absolute Feuchte x</b>: Wasserdampfmasse pro kg trockene Luft [kg/kg], häufig in g/kg angegeben.</li>
+        <li><b>Luftwechsel (ACH)</b>: Wie oft pro Stunde die Raumluft theoretisch ausgetauscht wird (Zuluft m³/h / Raumvolumen m³).</li>
+        <li><b>Befeuchtung</b>: Zufuhr von Wasserdampf, um im Winter trotz trockener Außenluft die gewünschte Raum-Feuchte zu halten. Näherung hier: isotherme Dampfbefeuchtung.</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer>
+    <span class="muted">Vereinfachtes Modell (cp=1,005 kJ/kgK; h_fg≈2500 kJ/kg). Für echte Geräteauswahl Herstellerdaten prüfen.</span>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>
