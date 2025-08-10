@@ -1,4 +1,4 @@
-// --- Konstanten / Hilfsfunktionen ---
+// --- Konstanten / Hilfsfunktionen (Deutsch) ---
 const CP_AIR = 1.005; // kJ/kgK
 const H_FG = 2500;    // kJ/kg (vereinfachend)
 function p_ws_Pa(Tc){ return 610.94 * Math.exp((17.625*Tc)/(Tc+243.04)); }
@@ -8,6 +8,7 @@ function relhum_from_T_x(Tc, x, p){ const pw = pw_from_x(x, p); return Math.max(
 function x_from_T_RH(Tc, RH, p){ const pw = RH * p_ws_Pa(Tc); return x_from_pw(pw, p); }
 function Tdp_from_pw(pw){ const ln = Math.log(pw/610.94); return (243.04*ln)/(17.625 - ln); }
 function Tdp_from_x(x, p){ return Tdp_from_pw(pw_from_x(x,p)); }
+function abs_humidity_gm3(Tc, x, p){ const Rv=461.5; const T=Tc+273.15; const pw=pw_from_x(x,p); const rho_v = pw/(Rv*T); return rho_v*1e3; }
 function fix(n, d=2){ return Number.isFinite(n) ? n.toFixed(d) : "–"; }
 function clamp(n, a, b){ return Math.min(Math.max(n, a), b); }
 
@@ -26,8 +27,8 @@ const radios = {
   sizeMode: () => document.querySelector('input[name="sizeMode"]:checked').value
 };
 
-// Szenario-Storage
-const STORAGE_KEY = "lab_auslegung_szenarien_v2";
+// Szenarien (lokal)
+const STORAGE_KEY = "lab_auslegung_szenarien_v3";
 
 function loadScenarios(){
   try{
@@ -100,6 +101,7 @@ function compute(){
 
   const ACH_min = Math.max(0, parseFloat(el("ACH_min").value));
   const OA_per_person = Math.max(0, parseFloat(el("OA_per_person").value));
+  const OA_min_m3ph = Math.max(0, parseFloat(el("OA_min_m3ph").value));
 
   const P = p_bar_hPa * 100; // Pa
   const V_room = L*B*H;
@@ -125,66 +127,80 @@ function compute(){
   const m_int_total_lat_kgph = m_people_lat_kgph + m_int_lat_kgph;
   const m_int_lat_kgps = Math.max(0, m_int_total_lat_kgph)/3600;
 
-  // 1) Zuluftmassenstrom aus sensibler Bilanz
-  const OA_frac_input = OA_frac_pct / 100;
-  const denom = CP_AIR * (T_room - T_supply - OA_frac_input*(T_OA - T_room));
-  const m_dot_sens = denom > 0 ? (Q_int_total_sens_kW / denom) : NaN;
-
-  // 2) Mindest-Luftwechsel (ACH)
+  // --- Stabile Auto-Auslegung ---
   const Vdot_ACH_m3ph = ACH_min * V_room; // m³/h
   const m_dot_ACH = (rho_air * Vdot_ACH_m3ph) / 3600; // kg/s
 
-  // gewählter Massenstrom (nur Auto-Modus): max aus sensibel und ACH
+  const OA_frac_input = clamp(OA_frac_pct / 100, 0, 1);
+  const Vdot_guess = Vdot_ACH_m3ph;
+  const Vdot_OA_min_persons = n_persons * OA_per_person; // m³/h
+  const Vdot_OA_by_frac_guess = Vdot_guess * OA_frac_input;
+  const Vdot_OA_eff_guess = Math.max(Vdot_OA_by_frac_guess, Vdot_OA_min_persons, OA_min_m3ph);
+  const OA_frac_eff_guess = Vdot_guess > 0 ? (Vdot_OA_eff_guess / Vdot_guess) : 0;
+
+  const DT_room_supply = (T_room - T_supply);
+  const DT_OA_room = (T_OA - T_room);
+  const DT_eff_guess = DT_room_supply - OA_frac_eff_guess * DT_OA_room;
+
+  const EPS = 0.2; // K
+  let m_dot_auto = NaN;
   let governing = "";
-  let m_dot;
-  if (sizeMode === "auto") {
-    const cand = [
-      {name:"sensibel", val:m_dot_sens},
-      {name:"ACH", val:m_dot_ACH}
-    ].filter(c => Number.isFinite(c.val));
-    if(cand.length === 0){
-      m_dot = NaN; governing = "—";
-    } else {
-      m_dot = Math.max(...cand.map(c=>c.val));
-      const win = cand.reduce((a,b)=> a.val>=b.val ? a:b);
-      governing = win.name;
-    }
+  if (DT_eff_guess <= EPS) {
+    m_dot_auto = m_dot_ACH;
+    governing = "ACH (ΔT/AL unzulässig)";
   } else {
-    m_dot = (rho_air * Vdot_user) / 3600;
-    governing = "fix";
+    m_dot_auto = (Q_int_total_sens_kW) / (CP_AIR * DT_eff_guess);
+    if (!Number.isFinite(m_dot_auto) || m_dot_auto <= 0) m_dot_auto = m_dot_ACH;
+    governing = "sensibel/ACH";
+    if (m_dot_auto < m_dot_ACH) { m_dot_auto = m_dot_ACH; governing = "ACH"; }
   }
 
-  // Volumenströme
-  const Vdot_m3ph = Number.isFinite(m_dot) ? (m_dot*3600)/rho_air : NaN;
-  el("m_dot").textContent = fix(m_dot,3);
-  el("Vdot").textContent = fix(Vdot_m3ph,0);
+  // Modus wählen
+  let governingMode = "";
+  let m_dot;
+  if (sizeMode === "auto") {
+    m_dot = m_dot_auto;
+    governingMode = governing;
+  } else {
+    m_dot = (rho_air * Vdot_user) / 3600;
+    governingMode = "fix";
+  }
 
-  // 3) Außenluft-Minimum nach Personen
-  const Vdot_OA_min_persons = n_persons * OA_per_person; // m³/h
-  const OA_min_m3ph = Math.max(0, parseFloat(el("OA_min_m3ph").value));
-  const Vdot_OA_by_frac = Number.isFinite(Vdot_m3ph) ? Vdot_m3ph * (OA_frac_input) : NaN;
-  const Vdot_OA_eff = Number.isFinite(Vdot_OA_by_frac)
+  // Endgültiger effektiver Außenluftanteil
+  const Vdot_m3ph = Number.isFinite(m_dot) ? (m_dot*3600)/rho_air : NaN;
+  const Vdot_OA_by_frac = Number.isFinite(Vdot_m3ph) ? Vdot_m3ph * OA_frac_input : NaN;
+  const Vdot_OA_eff = Number.isFinite(Vdot_m3ph)
     ? Math.max(Vdot_OA_by_frac, Vdot_OA_min_persons, OA_min_m3ph)
     : Math.max(Vdot_OA_min_persons, OA_min_m3ph);
+  const OA_frac_eff = (Number.isFinite(Vdot_m3ph) && Vdot_m3ph>0) ? (Vdot_OA_eff / Vdot_m3ph) : 0;
 
-  // Effektiver OA-Anteil bei gegebenem Gesamtvolumenstrom
-  const OA_frac_eff = Number.isFinite(Vdot_m3ph) && Vdot_m3ph>0 ? (Vdot_OA_eff / Vdot_m3ph) : 0;
+  // Ausgabe Luftmengen
+  el("m_dot").textContent = fix(m_dot,3);
+  el("Vdot").textContent = fix(Vdot_m3ph,0);
   el("Vdot_OA").textContent = Number.isFinite(Vdot_OA_eff) ? fix(Vdot_OA_eff,0) : "–";
-  el("governing").textContent = governing;
+  el("governing").textContent = governingMode;
 
-  // 4) Erforderliche Zuluftfeuchte (nutze effektiven OA-Anteil)
+  // Referenz: nur sensibel ohne Nebenbedingungen
+  const DT_eff_only = (T_room - T_supply) - OA_frac_input*(T_OA - T_room);
+  let Vdot_sensible_only = NaN;
+  if (DT_eff_only > 0.2) {
+    const m_dot_only = Q_int_total_sens_kW / (CP_AIR * DT_eff_only);
+    Vdot_sensible_only = (m_dot_only*3600)/rho_air;
+  }
+  el("Vdot_sensible_only").textContent = fix(Vdot_sensible_only,0);
+
+  // Erforderliche Zuluftfeuchte (mit OA_frac_eff)
   const x_supply_needed = Number.isFinite(m_dot)
     ? (x_room - (m_int_lat_kgps / m_dot) - OA_frac_eff * (x_OA - x_room))
     : NaN;
 
-  // 5) Min. Register-Taupunkt
+  // Register-Taupunkt
   const Tdp_coil = Number.isFinite(x_supply_needed) ? Tdp_from_x(x_supply_needed, P) : NaN;
 
-  // 6) Sensible Leistungen (mit effektivem OA-Anteil)
+  // Leistungen (sensibel, latent)
   const Q_sens_kW = Number.isFinite(m_dot) ? (m_dot*CP_AIR*(T_room - T_supply)) : NaN;
   const Q_sens_OA_kW = Number.isFinite(m_dot) ? (m_dot*CP_AIR*OA_frac_eff*(T_OA - T_room)) : NaN;
 
-  // 7) Latente Leistungen (mit effektivem OA-Anteil)
   const Lat_OA_kW = (Number.isFinite(m_dot) && Number.isFinite(x_supply_needed))
     ? (m_dot * OA_frac_eff * Math.max(0, x_OA - x_supply_needed) * H_FG)
     : NaN;
@@ -193,15 +209,15 @@ function compute(){
 
   const Q_total_kW = (Number.isFinite(Q_sens_kW) ? Q_sens_kW : 0) + Q_lat_kW;
 
-  // 8) Nacherwärmung
+  // Nacherwärmung
   const Q_reheat_kW = (Number.isFinite(m_dot) && Number.isFinite(Tdp_coil))
     ? Math.max(0, m_dot*CP_AIR*(T_supply - Tdp_coil))
     : NaN;
 
-  // 9) Kondensat
+  // Kondensat
+  const m_cond_kgph = (Q_lat_kW * 3600) / H_FG;
 
-  // 10) Befeuchtungsbedarf (Winterannahme: keine Entfeuchtung aktiv)
-  // m_hum = m_dot * OA_frac_eff * (x_room - x_OA) - m_int_lat
+  // Befeuchtungsbedarf (Winterannahme: keine Entfeuchtung)
   let m_hum_kgps = NaN;
   if (Number.isFinite(m_dot)) {
     const deficit = OA_frac_eff * (x_room - x_OA); // kg/kg
@@ -210,9 +226,8 @@ function compute(){
   }
   const m_hum_kgph = Number.isFinite(m_hum_kgps) ? (m_hum_kgps * 3600) : NaN;
   const Q_hum_kW = Number.isFinite(m_hum_kgps) ? (Math.max(0, m_hum_kgps) * H_FG) : NaN;
-  const m_cond_kgph = (Q_lat_kW * 3600) / H_FG;
 
-  // Ausgabe
+  // Ausgabe Leistungen/Feuchten
   el("Q_sens").textContent = fix(Q_sens_kW,2);
   el("Q_sens_OA").textContent = fix(Q_sens_OA_kW,2);
   el("Q_sens_int").textContent = fix(Q_int_total_sens_kW,2);
@@ -223,28 +238,29 @@ function compute(){
 
   el("Q_total").textContent = fix(Q_total_kW,2);
   el("x_supply").textContent = Number.isFinite(x_supply_needed) ? fix(x_supply_needed*1000,2) : "–";
+  el("x_supply_gm3").textContent = (Number.isFinite(x_supply_needed) && Number.isFinite(T_supply)) ? fix(abs_humidity_gm3(T_supply, x_supply_needed, P),2) : "–";
   el("Tdp_coil").textContent = fix(Tdp_coil,2);
   el("Q_reheat").textContent = fix(Q_reheat_kW,2);
   el("m_cond").textContent = fix(m_cond_kgph,2);
+
   el("m_hum").textContent = fix(Math.max(0, m_hum_kgph),2);
   el("Q_hum").textContent = fix(Math.max(0, Q_hum_kW),2);
 
   el("x_room_label").textContent = fix(x_room*1000,2);
+  el("x_room_gm3").textContent = fix(abs_humidity_gm3(T_room, x_room, P),2);
   el("rh_room_label").textContent = fix(RH_room_calc,1);
   el("tdp_room_label").textContent = fix(Tdp_from_x(x_room, P),2);
   el("x_oa_label_2").textContent = fix(x_OA*1000,2);
+  el("x_oa_gm3").textContent = fix(abs_humidity_gm3(T_OA, x_OA, P),2);
   el("tdp_oa_label").textContent = fix(Tdp_from_x(x_OA, P),2);
 
   // Warnungen
   const warns = [];
-  if(!Number.isFinite(m_dot_sens) || m_dot_sens <= 0){
-    warns.push("Sensible Bilanz liefert keine sinnvolle Zuluftmenge – prüfe Zulufttemp., Außenluftanteil und interne sensible Last.");
-  }
   if(Number.isFinite(Vdot_m3ph) && Vdot_m3ph < Vdot_ACH_m3ph){
-    warns.push(`Zuluft unterschreitet Mindest-ACH (${fix(ACH_min,1)} 1/h). Auto-Modus hebt auf ${fix(Vdot_ACH_m3ph,0)} m³/h an.`);
+    warns.push(`Zuluft unterschreitet Mindest-ACH (${fix(ACH_min,1)} 1/h) – automatisch auf ${fix(Vdot_ACH_m3ph,0)} m³/h angehoben.`);
   }
   if(Number.isFinite(Vdot_OA_eff) && Number.isFinite(Vdot_m3ph) && (Vdot_OA_eff > Vdot_m3ph)){
-    warns.push("Erforderliche Außenluft übersteigt Gesamt-Zuluft. Bitte Volumenstrom erhöhen oder Außenluft je Person reduzieren.");
+    warns.push("Erforderliche Außenluft übersteigt die Gesamt-Zuluft. Bitte Volumenstrom erhöhen oder Außenluftanforderung reduzieren.");
   }
   if(Number.isFinite(x_supply_needed) && x_supply_needed > x_room + 1e-6){
     warns.push("Erforderliche Zuluft wäre feuchter als der Raum – Feuchteeinträge / Außenluftanteil prüfen.");
@@ -259,7 +275,7 @@ function compute(){
 }
 
 function bind(){
-  // Inputs neu berechnen
+  // Eingaben neu berechnen
   fields.forEach(id => el(id).addEventListener("input", compute));
   document.querySelectorAll('input[name="feuchteMode"]').forEach(r => r.addEventListener("change", ()=>{ toggleFeuchteInputs(); compute(); }));
   document.querySelectorAll('input[name="sizeMode"]').forEach(r => r.addEventListener("change", ()=>{
@@ -269,12 +285,11 @@ function bind(){
 
   // Buttons
   el("btnReset").addEventListener("click", ()=>{
-    // Defaults inkl. Nebenbedingungen
     const defaults = {
       L:5,B:5,H:3,T_room:21,x_room_gpkg:5.4,RH_room_pct:35,T_supply:16,
       T_OA:30,RH_OA_pct:50,OA_frac_pct:15,Vdot_user:2600,rho_air:1.2,p_bar_hPa:1013,
-      n_persons:2,P_sens_pp_W:70,m_lat_pp_kgph:0.05,Q_int_sens_kW:1.5,m_int_lat_kgph:0.5,
-      ACH_min:6, OA_per_person:20, feuchteMode:"abs", sizeMode:"auto"
+      n_persons:2,P_sens_pp_W:70,m_lat_pp_kgph:0.05,Q_int_sens_kW:1.0,m_int_lat_kgph:0.3,
+      ACH_min:6, OA_per_person:20, OA_min_m3ph:100, feuchteMode:"abs", sizeMode:"auto"
     };
     applyScenario(defaults);
     el("status").textContent = "Zurückgesetzt.";
@@ -308,6 +323,18 @@ function bind(){
     const db = loadScenarios();
     if(db[key]) applyScenario(db[key]);
   });
+
+  // Einfach/Erweitert
+  const adv = document.getElementById("toggleAdvanced");
+  if (adv){
+    const apply = ()=>{
+      document.querySelectorAll(".advanced").forEach(n=>{
+        n.style.display = adv.checked ? "" : "none";
+      });
+    };
+    adv.addEventListener("change", apply);
+    apply();
+  }
 }
 
 document.addEventListener("DOMContentLoaded", ()=>{
